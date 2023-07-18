@@ -1,0 +1,769 @@
+---
+title: "P03 - Study of the energy resolution and uncertainties of photon detectors
+  using Bayesian methods."
+author: "Giulio Albertin | 2097420, Marco Dall'Ara | 2091251"
+output: html_notebook
+---
+
+# P03 - Study of the energy resolution and uncertainties of photons in Ge detector using Bayesian methods.
+
+Germanium detectors have wide fields of application for γ- and X-ray spectrometry thanks to their excellent energy resolution. The energy resolution of these detectors is defined as the width of the detected energy spectra peaks (FWHM); it depends on
+
+-   the statistics of the charge creation process
+
+-   the properties of the detector, and primarily its charge collection efficiency
+
+-   the electronics noise
+
+The resolution can be expressed as the squared sum of two terms
+
+$$FWHM = \sqrt{w_d^2 + w_e^2}$$
+
+where the first term depends on the detector properties as
+
+$$w_d = 2 \sqrt{2 \ln{2} · F · Eγ · w }$$
+
+with F the Fano factor1 , Eγ the energy of the photon deposited energy and w is the electron-hole production energy threshold in germanium (w ∼ 3 eV)[1] The other term in eq. 1, we is connected with the readout electronics and depends on the detector capacitance, the size of the detector and the bias voltage. The following plot shows an uncalibrated energy spectrum collected with a Germanium detector irradiated by a combination of three sources: 241 Am, 60 Co and 137 Cs[2].
+
+According to [2], the source nuclides emit the following photons:
+
+| Nuclide | Photon energy (keV) |
+|---------|---------------------|
+| 241 Am  | 59.54               |
+| 137 Cs  | 661.66              |
+| 60 Co   | 1173.24, 1332.51    |
+
+and these are the first four peaks (starting from the left side) visible in the figure. Similar spectra have been collected with other gamma sources (i.e. Th-228).
+
+![My Image](spectrumGE.jpg)
+
+
+## 1. Infere the FWHM and the Centroids of each peak
+
+Using statistical methods similar to that presented during the course, infere the FWHM of each γ peak for all available γ sources
+
+First of all, we import the data and plot the spectra of the three sources.
+
+```{r 1 FWHM}
+library(rjags)
+
+#extract dataset from file and create a dataframe with them
+counts<-read.table("IC48A_AmCsCo.txt", skip =1,header = TRUE)
+counts<-na.omit(counts)
+dataset <- data.frame(counts)
+colnames(dataset) <- c("ADC_channel", "Counts")
+dataset<-dataset[(dataset$Counts>=0),]
+
+# Set the file path and name for the output PNG file
+output_file <- "plot_Ge.png"
+
+# Open the PNG device
+png(file = output_file, width = 800, height = 600)  # Adjust width and height as needed
+
+#plot the dataset
+plot(dataset$ADC_channel,log(dataset$Counts), type = 's', col='red', main = 'Am−Cs−Co spectra', xlab = 'ADC channel [#]', ylab = "Log Counts [#]",cex.main = 1.5)
+
+# Close the PNG device and save the plot as a PNG file
+dev.off()
+
+
+```
+
+The parameters of the peaks are inferred with a JAGS model.
+
+Generative model:
+
+Signal: Gaussian fit
+
+$$\text{Signal}(x |\text{N},\mu,\sigma) = \frac{N}{\sqrt{2 \pi}\sigma} e^{[ -\frac{(x-\mu)^2}{2\sigma^2}]} $$
+- $x$: ADC Channel
+
+-   $N$: amplitude of the signal
+
+-   $\mu$: centroid
+
+-   $\sigma$: standard deviation
+
+Background: Sigmoid fit
+
+$$\text{Bkg_sigmoid}(x |c_{1},c_{2},\mu_{\sigma},\text{offset}) = 
+    \frac{c_{1}}{1+ e^{c_{2}(x-\mu_{\sigma})} } + \text{offset}$$
+
+-   $c_{1}$: amplitude coefficient
+
+-   $c_{2}$: smoothness coefficient
+
+-   $\mu_{\sigma}$: centre
+
+Background: Linear Exponential
+
+$$\text{Bkg_exp}(x |\alpha,\text{offset}) = e^{\tan[\alpha]x + \text{offset}} $$ 
+
+- $\alpha$: slope [rad.]
+
+- $offset$: offset
+
+Measurement model: Poissonian distribution
+
+$$\text{Poiss}(n) =  \frac{\lambda^{n}e^{-\lambda}}{n!} $$
+
+- $\lambda$ = value of the generative model (signal + background) 
+
+- n = measured value (counts on the ADC Channel)
+
+As Priors distribution for the Bayesian Inferesence we use exclusively Uniform distribution. We change the domain range for every peaks.
+
+In the first peak we use as background a sigmoid function:
+
+$$\text{Bkg_sigmoid}(x |c_{1},c_{2},\mu_{\sigma},\text{offset}) = \frac{c_{1}}{1+ e^{c_{2}(\mu_{\sigma} - x)} } + \text{offset}$$
+
+### 241-Am En = 59.54 keV
+
+```{r peak 1}
+# FIRST PEAK
+
+#select the first peak
+peak1 = dataset[(dataset$ADC_channel>=195) & (dataset$ADC_channel<=250),]
+#max1=peak1[which.max(range1$Counts),"ADC_channel"]
+
+#plot it
+plot(peak1$ADC_channel,log(peak1$Counts),  col='red', main = 'Am−Cs−Co spectra', xlab = 'ADC channel [#]', ylab = " Log Counts [#]",cex.main = 1.5,)
+
+x <- peak1$ADC_channel
+
+#define the first model with a sigmoid background
+exp.background.model.1 <- "model{
+    #data likelihood
+    for (i in 1:length(x)){
+
+         y[i] ~ dpois(points[i])
+         
+         points[i] <- N/sqrt(2*3.14*sigma*sigma)*exp((-(x[i]-mu)*(x[i]-mu))/(2*sigma*sigma)) - (c.1/(1+exp(c.2*(x[i]-c.mu)))) + offset
+                                
+    }
+
+    #priors for the generative model
+
+    N ~ dunif(10000,80000)           
+    mu ~ dunif(200,220)        
+    sigma ~ dunif(0.5, 3)            
+    c.1 ~ dunif(100, 300)          
+    c.2 ~ dunif(0,1)      
+    c.mu ~ dunif(180,240)            
+    offset ~ dunif(100,300)         
+
+}"
+
+peak1.jm <- jags.model(textConnection(exp.background.model.1), 
+    data = list(x = peak1$ADC_channel, y = peak1$Counts), n.chain = 3, quiet = TRUE)
+
+update(peak1.jm , 1000, progress.bar = "none")
+
+peak1.cs <- coda.samples(model = peak1.jm, variable.names = c("N", "mu", "sigma", "c.1", "c.2", "c.mu", "offset"), n.iter = 10000, thin = 15, progress.bar = "none") 
+
+summary(peak1.cs)
+```
+
+```{r, fig.width=8, fig.height=8}
+# plot of the coda samples
+plot(peak1.cs)
+```
+
+```{r 2 calibration 1}
+
+peak1_mcmc <- as.mcmc(do.call(rbind, peak1.cs))
+#head(peak1_mcmc)
+
+N <- mean(peak1_mcmc[,1])
+c.1 <- mean(peak1_mcmc[,2])
+c.2 <- mean(peak1_mcmc[,3])
+c.mu <- mean(peak1_mcmc[,4])
+mu <- mean(peak1_mcmc[,5])
+offset <- mean(peak1_mcmc[,6])
+sigma <- mean(peak1_mcmc[,7])
+
+
+# fit
+pred_peak1 <- N/sqrt(2*3.14*sigma*sigma)*exp((-(x-mu)*(x-mu))/(2*sigma*sigma)) - (c.1/(1+exp(c.2*(x-c.mu)))) + offset
+
+
+plot(peak1$ADC_channel,peak1$Counts,  col='red', main = 'Am−Cs−Co spectra, Peak 1', xlab = 'ADC channel [#]', ylab = "Counts [#]",cex.main = 1.5)
+lines(peak1$ADC_channel, pred_peak1)
+
+```
+For the rest of the peaks we use a Linear exponential background in the generative model:
+
+$$\text{Bkg_exp}(x |\alpha,\text{offset}, \mu) = e^{\tan(\alpha)(x - \mu) + \text{offset}} $$
+
+
+### 137-Cs En = 661.66 keV
+
+```{r peak 2}
+#SECOND PEAK
+
+# range of the second peak
+peak2 = dataset[!(dataset$ADC_channel<=2200) & (dataset$ADC_channel<=2350),]
+#max2=peak2[which.max(range2$Counts),"ADC_channel"]
+#plot the second peak
+plot(peak2$ADC_channel,log(peak2$Counts),  col='red', main = 'Am−Cs−Co spectra', xlab = 'ADC channel [#]', ylab = " Log Counts [#]",cex.main = 1.5)
+
+# rjags model as .bugs file
+# peak describe a gaussian
+# with an exponential background exp(m(x - mu) + offset)
+exp.background.model.2 <- "model{
+    #data likelihood
+    for (i in 1:length(x)){
+
+         y[i] ~ dpois(points[i])
+         
+        points[i] <- N/sqrt(2*3.14*sigma*sigma)*exp((-(x[i]-mu)*(x[i]-mu))/(2*sigma*sigma)) +exp(tan(slope.alpha)*(x[i]-mu) + offset)  # line generative model
+        
+    }
+
+    #priors for the generative model
+
+    N ~ dunif(100000,200000)            
+    mu ~ dunif(2270,2295)        
+    sigma ~ dunif(0.01,3)             
+    offset ~ dunif(0,100)        
+    slope.alpha ~ dunif(-3.14/2, 0)  
+
+
+}"
+
+# initialization of the model
+peak2.jm <- jags.model(textConnection(exp.background.model.2), 
+    data = list(x = peak2$ADC_channel, y = peak2$Counts), n.chain = 3, quiet = TRUE)
+
+# burn-in
+update(peak2.jm , 1000, progress.bar = "none")
+
+# creates the coda sample
+peak2.cs <- coda.samples(model = peak2.jm, variable.names = c("N", "mu", "sigma", "offset", "slope.alpha"), n.iter = 10000, thin = 15, progress.bar="none") 
+
+summary(peak2.cs)
+```
+
+```{r, fig.width=8, fig.height=8}
+# plot of the coda samples
+plot(peak2.cs)
+```
+
+```{r 2 calibration 2}
+
+# merge the chains on a mcmc objects
+peak2_mcmc <- as.mcmc(do.call(rbind, peak2.cs))
+#head(peak2_mcmc)
+
+# mean values of the parameters form the mcmc object
+peak2_params <- c("N" = mean(peak2_mcmc[,1]),"mu" = mean(peak2_mcmc[,2]), "offset" = mean(peak2_mcmc[,3]), "sigma" = mean(peak2_mcmc[,4]), "alpha" = mean(peak2_mcmc[,5]))
+#peak2_params[4] *  2.3
+
+# fit of the gaussian peaks + the exponential background
+pred_peak2 <-  peak2_params[1] /sqrt(2*3.14*peak2_params[4]*peak2_params[4])*exp((-(peak2$ADC_channel-peak2_params[2])*(peak2$ADC_channel-peak2_params[2]))/(2*peak2_params[4]*peak2_params[4])) +exp(tan(peak2_params[5])*(peak2$ADC_channel - peak2_params[2]) + peak2_params[3]) 
+
+#plot of the data and the fit
+plot(peak2$ADC_channel,peak2$Counts,  col='red', main = 'Am−Cs−Co spectra, Peak 2', xlab = 'ADC channel [#]', ylab = "Counts [#]",cex.main = 1.5)
+lines(peak2$ADC_channel, pred_peak2)
+
+
+```
+### 60-Co En = 1173.24 keV
+
+
+```{r peak 3 }
+# THIRD PEAK
+
+# range of the third peak
+peak3 = dataset[!(dataset$ADC_channel<=3950) & (dataset$ADC_channel<=4100),]
+#max3=peak3[which.max(range3$Counts),"ADC_channel"]
+
+#plot the third peak
+plot(peak3$ADC_channel,log(peak3$Counts), col='red', main = 'Am−Cs−Co spectra', xlab = 'ADC channel [#]', ylab = "Log Counts [#]",cex.main = 1.5)
+
+# rjags model as .bugs file
+# peak describe a gaussian
+# with an exponential background exp(m(x - mu) + offset)
+exp.background.model.3 <- "model{
+    #data likelihood
+    for (i in 1:length(x)){
+
+         y[i] ~ dpois(points[i])
+         
+        points[i] <- N/sqrt(2*3.14*sigma*sigma)*exp((-(x[i]-mu)*(x[i]-mu))/(2*sigma*sigma)) +exp(tan(slope.alpha)*(x[i]-mu) + offset)  # line generative model
+        
+    }
+
+    #priors for the generative model
+
+    N ~ dunif(10000,90000)            
+    mu ~ dunif(4025,4055)        
+    sigma ~ dunif(0.1,5)             
+    offset ~ dunif(0,400)        
+    slope.alpha ~ dunif(-3.14/2, 0)  
+
+}"
+
+# initialization of the model
+peak3.jm <- jags.model(textConnection(exp.background.model.3), 
+    data = list(x = peak3$ADC_channel, y = peak3$Counts), n.chain = 3, quiet = TRUE)
+
+# burn-in
+update(peak3.jm , 1000, progress.bar="none")
+
+# creates the coda sample
+peak3.cs <- coda.samples(model = peak3.jm, variable.names = c("N", "mu", "sigma", "offset", "slope.alpha"), n.iter = 10000, thin = 15, progress.bar="none") 
+
+summary(peak3.cs)
+```
+
+```{r, fig.width=8, fig.height=8}
+# plot of the coda samples
+plot(peak3.cs)
+```
+
+```{r 2 calibration 3}
+
+# merge the chains on a mcmc objects
+peak3_mcmc <- as.mcmc(do.call(rbind, peak3.cs))
+#head(peak3_mcmc)
+
+# mean values of the parameters form the mcmc object
+peak3_params <- c("N" = mean(peak3_mcmc[,1]),"mu" = mean(peak3_mcmc[,2]), "offset" = mean(peak3_mcmc[,3]), "sigma" = mean(peak3_mcmc[,4]), "alpha" = mean(peak3_mcmc[,5]))
+
+# fit of the gaussian peaks + the exponential background
+pred_peak3 <-  peak3_params[1] /sqrt(2*3.14*peak3_params[4]*peak3_params[4])*exp((-(peak3$ADC_channel-peak3_params[2])*(peak3$ADC_channel-peak3_params[2]))/(2*peak3_params[4]*peak3_params[4])) +exp(tan(peak3_params[5])*(peak3$ADC_channel - peak3_params[2]) + peak3_params[3]) 
+
+#plot the fit and the measurements
+plot(peak3$ADC_channel, peak3$Counts,  col='red', main = 'Am−Cs−Co spectra, Peak 3', xlab = 'ADC channel [#]', ylab = "Counts [#]",cex.main = 1.5)
+lines(peak3$ADC_channel, pred_peak3)
+
+#peak3.acf <- acf(peak3_mcmc, plot = F) #plot = F will not show the plot of the ACF.
+
+```
+
+
+### 60-Co En = 1332.51 keV
+
+```{r peak 4}
+# FOURTH PEAK 
+
+# range of the fourth peak
+peak4 = dataset[!(dataset$ADC_channel<=4500) & (dataset$ADC_channel<=4700),]
+#max4=peak4[which.max(range4$Counts),"ADC_channel"]
+
+#plot the third peak
+plot(peak4$ADC_channel, log(peak4$Counts), col='red', main = 'Am−Cs−Co spectra', xlab = 'ADC channel [#]', ylab = "Log Counts [#]",cex.main = 1.5)
+
+# rjags model as .bugs file
+# peak describe a gaussian
+# with an exponential background exp(m(x - mu) + offset)
+exp.background.model.4 <- "model{
+    #data likelihood
+    for (i in 1:length(x)){
+
+         y[i] ~ dpois(points[i])
+         
+        points[i] <- N/sqrt(2*3.14*sigma*sigma)*exp((-(x[i]-mu)*(x[i]-mu))/(2*sigma*sigma)) + exp(tan(slope.alpha)*(x[i]-mu) + offset)  # line generative model
+
+    }
+
+    #priors for the generative model
+
+    N ~ dunif(40000,70000)            
+    mu ~ dunif(4575,4600)        
+    sigma ~ dunif(0.1, 6)             
+    offset ~ dunif(0,20)        
+    slope.alpha ~ dunif(-3.14/2, 0)  
+
+
+}"
+
+# initialization of the model
+peak4.jm <- jags.model(textConnection(exp.background.model.4), 
+    data = list(x = peak4$ADC_channel, y = peak4$Counts), n.chain = 3, quiet = TRUE)
+
+# burn-in
+update(peak4.jm , 1000, progress.bar="none")
+
+# creates the coda sample
+peak4.cs <- coda.samples(model = peak4.jm, variable.names = c("N", "mu", "sigma", "offset", "slope.alpha"), n.iter = 10000, thin = 15, progress.bar="none") 
+
+summary(peak4.cs)
+```
+
+```{r, fig.width=8, fig.height=8}
+# plot of the coda samples
+plot(peak4.cs)
+```
+
+```{r 2 calibration 5}
+
+# merge the chains on a mcmc objects
+peak4_mcmc <- as.mcmc(do.call(rbind, peak4.cs))
+#head(peak4_mcmc)
+
+# mean values of the parameters form the mcmc object
+peak4_params <- c("N" = mean(peak4_mcmc[,1]),"mu" = mean(peak4_mcmc[,2]), "offset" = mean(peak4_mcmc[,3]), "sigma" = mean(peak4_mcmc[,4]), "alpha" = mean(peak4_mcmc[,5]))
+#peak4_params[4]*2.35
+
+# fit of the gaussian peaks + the exponential background
+pred_peak4 <-  peak4_params[1] /sqrt(2*3.14*peak4_params[4]*peak4_params[4])*exp((-(peak4$ADC_channel-peak4_params[2])*(peak4$ADC_channel-peak4_params[2]))/(2*peak4_params[4]*peak4_params[4])) +exp(tan(peak4_params[5])*(peak4$ADC_channel - peak4_params[2]) + peak4_params[3]) 
+
+#plot the fit and the measurements
+plot(peak4$ADC_channel, peak4$Counts,  col='red', main = 'Am−Cs−Co spectra, Peak 4', xlab = 'ADC channel [#]', ylab = "Counts [#]",cex.main = 1.5)
+lines(peak4$ADC_channel, pred_peak4)
+
+```
+
+
+### COINCIDENCE 60-Co En = 1173.24 keV +  60-Co En = 1332.51 keV
+
+We assume as prior information that the fifth peak is the sum between the two gammas of 60-Co.
+
+This peak will be included in the calibration data set.
+
+
+```{r peak 5 coincidence}
+# FIFTH PEAK
+
+#range of the fifth peak
+peak5 = dataset[!(dataset$ADC_channel<=8300) & (dataset$ADC_channel<= 8700),]
+#max4=peak4[which.max(range4$Counts),"ADC_channel"]
+
+# plot the fifth peak
+plot(peak5$ADC_channel, peak5$Counts, col='red', main = 'Am−Cs−Co spectra', xlab = 'ADC channel [#]', ylab = "Log Counts [#]",cex.main = 1.5)
+
+# rjags model as .bugs file
+# peak describe a gaussian
+# with an exponential background exp(m(x - mu) + offset)
+exp.background.model.5 <- "model{
+    #data likelihood
+    for (i in 1:length(x)){
+
+         y[i] ~ dpois(points[i])
+         
+        points[i] <- N/sqrt(2*3.14*sigma*sigma)*exp((-(x[i]-mu)*(x[i]-mu))/(2*sigma*sigma)) + exp(tan(slope.alpha)*(x[i]-mu) + offset)  # line generative model
+
+    }
+
+    #priors for the generative model
+
+    N ~ dunif(0,10000)            
+    mu ~ dunif(8600,8630)        
+    sigma ~ dunif(0.1, 10)             
+    offset ~ dunif(-5,10)        
+    slope.alpha ~ dunif(-3.14/2, 0)  
+
+}"
+
+# initialization of the model
+peak5.jm <- jags.model(textConnection(exp.background.model.5), 
+    data = list(x = peak5$ADC_channel, y = peak5$Counts), n.chain = 3, quiet = TRUE)
+# burn-in
+update(peak5.jm , 1000, progress.bar="none")
+
+# coda sample
+peak5.cs <- coda.samples(model = peak5.jm, variable.names = c("N", "mu", "sigma", "offset", "slope.alpha"), n.iter = 10000, thin = 15, progress.bar="none") 
+
+summary(peak5.cs)
+```
+
+```{r, fig.width=8, fig.height=8}
+# plot of the coda samples
+plot(peak5.cs)
+```
+
+```{r 2 calibration 6}
+
+# merge the chains in a mcmc object
+peak5_mcmc <- as.mcmc(do.call(rbind, peak5.cs))
+#head(peak5_mcmc)
+
+# mean values of the parameters
+peak5_params <- c("N" = mean(peak5_mcmc[,1]),"mu" = mean(peak5_mcmc[,2]), "offset" = mean(peak5_mcmc[,3]), "sigma" = mean(peak5_mcmc[,4]), "alpha" = mean(peak5_mcmc[,5]))
+
+#  fit of the peak
+pred_peak5 <-  peak5_params[1] /sqrt(2*3.14*peak5_params[4]*peak5_params[4])*exp((-(peak5$ADC_channel-peak5_params[2])*(peak5$ADC_channel-peak5_params[2]))/(2*peak5_params[4]*peak5_params[4])) +exp(tan(peak5_params[5])*(peak5$ADC_channel - peak5_params[2]) + peak5_params[3]) 
+
+# plot of data and fit
+plot(peak5$ADC_channel, peak5$Counts,  col='red', main = 'Am−Cs−Co spectra, Peak 5', xlab = 'ADC channel [#]', ylab = "Counts [#]",cex.main = 1.5)
+lines(peak5$ADC_channel, pred_peak5)
+```
+## 2. Linear Calibration
+
+Assuming a linear response of the detector, as a function of energy, perform a calibration of the detector, associating the centroid of each peak to the nominal value of the detected γ full energy peak
+
+To infer the parameters we use again a JAGS model.
+
+Generative model:
+
+$$\ y = a + b \cdot x$$
+
+
+
+- $a$ = offset
+
+- $b$ = slope
+
+- $x$ = centroid the peak
+
+Measurement Model:
+
+$$\text{Norm}(\sigma |E, y ) = \frac{1}{\sqrt{2 \pi}\sigma} \exp \left[ -\frac{(E - y(x))^2}{2\sigma^2}\right] $$ 
+
+- $E$: true value of gamma peak, taken from literature
+
+- $y(x)$: values of the peak from the generative model
+
+- $sigma$: standard deviation
+
+In this framework we adopt normal prior distributions.
+
+```{r 2 calibration}
+
+# linear model as .bug file for calibration
+# the theoretical value, the fit,  and the measurement will have some discrepancy
+# the difference of this two value will follow a normal distribution 
+# we also want to infer the value of sigma
+linear.model <- "model{
+    # Likelihood model for X
+    for (i in 1:N){
+      E[i] ~ dnorm(f[i], tau) # tau is precision (1 / variance)
+		  f[i] <- a + b* x[i]
+    }
+    # Prior model for p
+    b ~ dnorm(0, 0.01)
+    a ~ dnorm(0, 0.01)
+    sigma ~ dunif(0, 100)
+    tau <- 1 / (sigma * sigma)
+
+}"
+
+x <- c(2.062e+02 , 2.279e+03, 4.040e+03, 4.587e+03, 8.619e+03) #channel
+y <- c(59.54, 661.66, 1173.24, 1332.51, 1173.24 + 1332.51) #true value of energy
+
+# create the jags model
+calibration.jags <- jags.model(textConnection(linear.model), 
+    data = list(x = x, E = y, N = length(y)), n.chain = 3, quiet =TRUE )
+
+#burn-in
+update(calibration.jags , 1000, progress.bar = "none")
+
+# create the coda sample
+linear.pred <- coda.samples(model = calibration.jags, variable.names = c("a", "b", "sigma"), n.iter = 10000, thin = 15, progress.bar="none") 
+
+summary(linear.pred)
+```
+
+```{r, fig.width=8, fig.height=8}
+# plot of the coda samples
+plot(linear.pred)
+```
+
+```{r 2 calibration 7}
+
+# merge the chain in a mcmc object
+calibration_mcmc <- as.mcmc(do.call(rbind, linear.pred))
+#head(calibration_mcmc)
+
+
+# compute the ACF CORRELATIN
+calibration.acf <- acf(calibration_mcmc, plot = FALSE) #plot = F will not show the plot of the ACF.
+
+cal_names <- c("b", "a", expression(sigma))
+
+```
+
+```{r, fig.width=8, fig.height=8}
+# plot ACF CORRELATION
+plot(calibration.acf, type = "s", xlab = "Lag", ylab = NULL,
+     ylim = NULL, main = NULL, col = "red", lwd = 2)
+```
+
+```{r, fig.width=6, fig.height=4}
+#CORRELATION BETWEEN PARAMS
+par(mfrow = c(1,3))
+for(i in 1:2){
+  for(j in (i+1):3){
+    points.i <- as.numeric(calibration_mcmc[,i])
+points.j <- as.numeric(calibration_mcmc[,j])
+plot(points.i, points.j,  col="coral", pch = 1, xlab=cal_names[i], ylab=cal_names[j], cex.lab=1.3, cex.axis=1.3, cex.main=1.3, cex.sub=1.3)
+  }
+}
+
+```
+
+```{r 2 calibration 9}
+
+
+# mean values of the calibrations
+cal_params <- c(mean(calibration_mcmc[,1]), mean(calibration_mcmc[,2]), mean(calibration_mcmc[,3]))
+
+# grid of channel values
+xnew <- 0:10000
+n <- length(xnew)
+
+# expectation value of the linear calibration
+fit.pred <- cal_params[1] + xnew * cal_params[2]
+
+#extract confidence intervals
+confidence_interval_a <- quantile(calibration_mcmc[,"a"], c(0.025, 0.975))
+confidence_interval_b <- quantile(calibration_mcmc[,"b"], c(0.025, 0.975))
+
+
+#plot the expectation value of the linear fit of the calibration
+plot(xnew, fit.pred, main = "Calibration of the Ge detector", type = 'l', xlab = "Channel [ch]", ylab = expression("E"* gamma ~ "[keV]"),lwd = 2, col = "dark red")
+# measurements
+points(x, y, pch = 1, col = "gold", cex = 1, lwd = 2)
+# Add legend with formulas
+legend_text <- bquote("E"* gamma == .(round(mean(calibration_mcmc[,1]), 2)) + .(round(mean(calibration_mcmc[,2]), 2)) * "* Ch")
+sigma_text <- bquote(sigma == .(round(mean(calibration_mcmc[,3]), 2)))
+legend("topleft", legend = c(legend_text, sigma_text), bty = "n", cex = 1.2)
+
+
+# apply the calibration 
+dataset$Energy <- dataset$ADC_channel * cal_params[2] + cal_params[1]
+
+#plot of the calibration
+plot(dataset$Energy,log(dataset$Counts), type = 's', col='orange', main = 'Calibrated Am−Cs−Co spectra', xlab = expression("E"* gamma ~ "[keV]"), ylab = "Log Counts [#]",cex.main = 1.5)
+
+
+
+
+```
+
+
+
+## 3. Energy resolution behavior
+
+Using a MCMC method (with either JAGS or stan), study the behaviour of the energy resolution as a function of the photon energy and infer the parameters of eq.1 and 2.
+
+We make an inference using a JAGS model. 
+
+Generative model:
+
+$$FWHM = \sqrt{8 ln(2)FwEγ + w_e^2}$$
+
+note that the Fano factor $F=\dfrac{ \sigma_{sper}^2}{ \sigma_{pois}^2}$. This factor must be introduced since the process giving rise to each individual charge carrier is not independent as the number of ways an atom may be ionized is limited by the discrete electron shells.
+
+Measurement Model:
+
+$$\text{Norm}(\sigma |E, y ) = \frac{1}{\sqrt{2 \pi}\sigma} \exp \left[ -\frac{(E - y(x))^2}{2\sigma^2}\right] $$ 
+
+- $E$: true value of gamma peak, taken from literature
+
+- $y(x)$: values of the peak from the generative model
+
+- $sigma$: standard deviation
+
+
+
+```{r}
+
+#model as .bug file
+#note that w_e in the model should be interpreted as w_e^2 and F as F*w
+en.resolution.model <- "model{
+    # Likelihood model 
+    for (i in 1:N){
+      FWHM[i] ~ dnorm(y[i], tau) # tau is precision (1 / variance)
+		  y[i] <- sqrt(8*log(2)*Fw*E[i] + w_e2) 
+    }
+    # Prior model for F,w,w_e
+    Fw ~ dunif(0, 0.003) 
+    #w ~ dunif(0, 0.5)
+    w_e2 ~ dunif(0, 10)
+
+    sigma ~ dunif(0, 1)
+    tau <- 1 / (sigma * sigma)
+
+}"
+
+# energies of the peak calibrated
+x <- c(2.062e+02 , 2.279e+03, 4.040e+03, 4.587e+03)*cal_params[2] + cal_params[1]
+#y <- beta_list
+
+# FWHM in channel
+y_ch <- c(1.3*2.35,2.379*2.35,3.323*2.35,3.644*2.35) # FWHM best values found
+
+# FWHM in energy
+# since it is a range of energies the offset is elided 
+y <- y_ch*cal_params[2]
+
+
+jm <- jags.model(textConnection(en.resolution.model), 
+    data = list(E = x, FWHM = y, N = length(y)), n.chain = 3, quiet = TRUE)
+
+#burn-in
+update(jm , 1000, progress.bar = "none")
+
+en.resolution <- coda.samples(model = jm, variable.names = c("Fw", "w_e2", "sigma"), n.iter = 10000, thin = 15, progress.bar = "none") 
+
+summary(en.resolution)
+#pdf("plot_output.pdf")  # Specify the output PDF file name
+
+
+```
+
+```{r, fig.width=8, fig.height=8}
+plot(en.resolution)
+```
+
+```{r, fig.width=6, fig.height=4}
+
+#par(mfrow = c(1,3))
+#for(i in 1:2){
+#  for(j in (i+1):3){
+#    points.i <- as.numeric(en.resol_mcmc[,i])
+#points.j <- as.numeric(en.resol_mcmc[,j])
+#plot(points.i, points.j,  col="coral", pch = 1, xlab=en.resol_names[i], ylab=en.resol_names[j], cex.lab=1.3, cex.axis=1.3, cex.main=1.3, cex.sub=1.3)
+#  }
+#}
+```
+
+```{r 2 calibration 10}
+#dev.off()  # Close the PDF device and save the file
+
+
+en.resol_mcmc <- as.mcmc(do.call(rbind, en.resolution))
+
+
+#en.resol.acf <- acf(en.resol_mcmc, plot = F) #plot = F will not show the plot of the ACF.
+
+en.resol_names <- c("Fw", expression(sigma), "w_e2")
+
+en.resol_mcmc[,"w_e2"] <- sqrt(en.resol_mcmc[,"w_e2"]) #redefine w_e with its right definition 
+
+#ACF CORRELATION
+
+#plot(en.resol.acf, type = "s", xlab = "Lag", ylab = NULL,
+ #    ylim = NULL, main = NULL, col = "red", lwd = 2)
+
+#CORRELATION BETWEEN PARAMS
+
+
+
+en.res.params <- c(mean(en.resol_mcmc[,1]), mean(en.resol_mcmc[,2]), mean(en.resol_mcmc[,3]))
+
+#mean(en.resol_mcmc[,1])
+
+E <- seq(from = 0, to = 5000, length.out = 10000)
+n <- length(E)
+
+en.resol.fit <- sqrt(8*log(2)*en.res.params[1]*E + en.res.params[3]*en.res.params[3]) 
+
+#plo the data
+plot(E, en.resol.fit, main = "Ge detector FWHM vs Energy fit", type = 'l', xlab = expression("E"* gamma ~ "[keV]"), ylab ="FWHM [keV]",lwd = 2, col = "dark red", xlim = c(0,2000))
+points(x, y, pch = 1, col = "gold", cex = 2, lwd = 2)
+# Add legend with formulas
+legend("topleft", legend = c(expression(FWHM == sqrt(8*ln(2)*F*w*E[gamma] + w[e]^2)), bquote(sigma == .(round(mean(en.resol_mcmc[,"sigma"]), 2)))), bty = "n", cex = 1.2)
+
+
+summary_fit <- data.frame("F" = (mean(en.resol_mcmc[,"Fw"]))/0.003, "w[keV]" = 0.003, "w_e[keV]" = mean(en.resol_mcmc[,"w_e2"]))
+names(summary_fit) = c("F", "w[keV]", "w_e[keV]")
+summary_fit
+
+```
+
+Here we have considered $w$, the electron-hole production energy threshold in germanium, equal to $3 eV$. To retrieve the Fano factor $F$ we can just divide $Fw$ by $w$. It is difficult to compare rigoursly different Fano factors values with an hypothesis testing since they depend on the Temperature and a lot on the value of $w$ assigned. However typical values of Fano Factor are smaller than 1. 
+

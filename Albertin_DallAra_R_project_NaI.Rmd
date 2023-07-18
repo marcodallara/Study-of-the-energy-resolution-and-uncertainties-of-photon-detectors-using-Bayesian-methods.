@@ -1,0 +1,734 @@
+---
+title: "P03 - Study of the energy resolution and uncertainties of photon detectors
+  using Bayesian methods."
+author: "Giulio Albertin | 2097420 Marco Dall'Ara | 2091251"
+output: html_notebook
+---
+
+# P03 - Study of the energy resolution and uncertainties of photons in NaI detector using Bayesian methods.
+
+NaI detectors have wide fields of application for γ- and X-ray spectrometry. The energy resolution of these detectors is defined as the width of the detected energy spectra peaks (FWHM); it depends on
+
+-   the statistics of the charge creation process 
+
+-   the properties of the detector, and primarily its charge collection efficiency 
+
+-   the electronics noise 
+
+The resolution can be expressed as the squared sum of two terms 
+
+$$FWHM = \sqrt{w_d^2 + w_e^2}$$ 
+
+where the first term depends on the detector properties as
+
+$$w_d = 2 \sqrt{2 \ln{2} · F · Eγ · w }$$
+
+with F the Fano factor , Eγ the energy of the photon deposited energy and w is a constant that takes into account the electron-hole production energy threshold in NaI and the efficency of the PMT. The other term in eq. 1, we is connected with the readout electronics and depends on the detector capacitance, the size of the detector and the bias voltage. The following plot shows an uncalibrated energy spectrum collected with a NaI detector irradiated by a combination of three sources: 22 Na, 60 Co and 137 Cs.
+
+The source nuclides emit the following photons:
+
+| Nuclide | Photon energy (keV) |
+|---------|---------------------|
+| 22 Na   | 511, 1274.577       |
+| 137 Cs  | 661.66              |
+| 60 Co   | 1173.24, 1332.51    |
+
+
+as the image shows below.
+
+![My Image](NaI_spectrum.jpeg)
+
+## 1. Infere the FWHM and the Centroids of each peak
+
+Using statistical methods similar to that presented during the course, infere the FWHM of each γ peak for all available γ sources
+
+First of all, we import the data and plot the spectra of the three sources.
+
+```{r libraries}
+library(tidyverse)
+library(rjags)
+
+```
+
+```{r 22 Na}
+Na_counts<-read.delim("22NaSpectrum_NaI_Tl_detector.dat", skip =2,header = TRUE)
+Na_counts<-na.omit(Na_counts)
+Na_dataset <- data.frame(Na_counts)
+
+colnames(Na_dataset) <- c("ADC_channel", "Counts")
+Na_dataset<-Na_dataset[(Na_dataset$Counts>=0),]
+
+#plot(Na_dataset$ADC_channel,log(Na_dataset$Counts), type = 's', col='springgreen 2', main = '22-Na spectra, NaI detector', xlab = 'ADC channel [#]', ylab = "Log Counts [#]",cex.main = 1.5)
+
+
+```
+
+
+```{r 137 Cs}
+Cs_counts<-read.delim("137CsSpectrum_NaI_Tl_detector.dat", skip =2,header = TRUE)
+Cs_counts<-na.omit(Cs_counts)
+Cs_dataset <- data.frame(Cs_counts)
+
+colnames(Cs_dataset) <- c("ADC_channel", "Counts")
+Cs_dataset<-Cs_dataset[(Cs_dataset$Counts>=0),]
+
+#plot(Cs_dataset$ADC_channel,log(Cs_dataset$Counts), type = 's', col='coral 2', main = '137-Cs spectra, NaI detector', xlab = 'ADC channel [#]', ylab = "Log Counts [#]",cex.main = 1.5)
+
+```
+
+
+```{r 60 Co peak 1}
+
+Co_counts<-read.delim("60CoSpectrum_NaI_Tl_detector.dat", skip =2,header = TRUE)
+Co_counts<-na.omit(Co_counts)
+Co_dataset <- data.frame(Co_counts)
+
+colnames(Co_dataset) <- c("ADC_channel", "Counts")
+Co_dataset<-Co_dataset[(Co_dataset$Counts>=0),]
+#plot(peak1_Co$ADC_channel,log(peak1_Co$Counts), type = 's', col='navy', main = '60-Co spectra, NaI detector', xlab = 'ADC channel [#]', ylab = "Log Counts [#]",cex.main = 1.5)
+
+
+```
+
+The parameters of the peaks are inferred with a JAGS model.
+
+Generative model:
+
+Signal: Gaussian fit
+
+$$\text{Signal}(x |\text{N},\mu,\sigma) = \frac{N}{\sqrt{2 \pi}\sigma} e^{[ -\frac{(x-\mu)^2}{2\sigma^2}]} $$ 
+
+- $x$: ADC Channel
+
+-   $N$: amplitude of the signal
+
+-   $\mu$: centroid
+
+-   $\sigma$: standard deviation
+
+
+Background: Linear Exponential
+
+$$\text{Bkg_exp}(x |\alpha,\text{offset}) = e^{\tan[\alpha]x + \text{offset}} $$ 
+
+- $\alpha$: slope [rad.]
+
+- $offset$: offset
+
+Measurement model: Poissonian distribution
+
+$$\text{Poiss}(n) =  \frac{\lambda^{n}e^{-\lambda}}{n!} $$
+
+- $\lambda$ = value of the generative model (signal + background) 
+
+- n = measured value (counts on the ADC Channel)
+
+As Priors distribution for the Bayesian Inferesence we use exclusively Uniform distribution. We change the domain range for every peaks.
+
+### 60-Co En = 1173.24 keV & 60-Co En = 1332.51 keV
+
+Since the two peaks are near they overlap and then we chose the Signal function of the generative model to be the following:
+
+$$\text{Signal}(x_{1}, x_{2} |\text{N}_{1},\mu_{1},\sigma_{1}, \text{N}_{2},\mu_{2},\sigma_{2}) = \frac{N_{1}}{\sqrt{2 \pi}\sigma_{1}} e^{ -\frac{(x_{1}-\mu_{1})^2}{2\sigma_{1}^2}} + \frac{N_{2}}{\sqrt{2 \pi}\sigma_{2}} e^{ -\frac{(x_{2}-\mu_{2})^2}{2\sigma_{2}^2}} $$ 
+
+As Background we use the linear exponential function with the following form:
+
+$$\text{Bkg_exp}(x |\alpha,\text{offset}, \mu_{1}, \mu_{2}) = e^{\tan(\alpha)(x - 0.5 \cdot (\mu_{1} + \mu_{2})) + \text{offset}} $$
+
+
+```{r 60 Co}
+
+peak1_Co = Co_dataset[(Co_dataset$ADC_channel>=210) & (Co_dataset$ADC_channel<=300),]
+plot(peak1_Co$ADC_channel,log(peak1_Co$Counts), type = 's', col='navy', main = '60-Co spectra, NaI detector', xlab = 'ADC channel [#]', ylab = "Log Counts [#]",cex.main = 1.5)
+
+#define the model for both the Co peaks
+exp.background.model.2 <- "model{
+    #data likelihood
+    
+    for (i in 1:length(x)){
+
+         y[i] ~ dpois(points[i])
+         
+        points[i] <- N_1/sqrt(2*3.14*sigma_1*sigma_1)*exp((-(x[i]-mu_1)*(x[i]-mu_1))/(2*sigma_1*sigma_1)) +N_2/sqrt(2*3.14*sigma_2*sigma_2)*exp((-(x[i]-mu_2)*(x[i]-mu_2))/(2*sigma_2*sigma_2)) +exp(tan(slope.alpha)*(x[i]-(mu_1+mu_2)/2) + offset)
+  # line generative model
+        
+    }
+
+    #priors for the generative model
+
+    N_1 ~ dunif(20000,40000)  
+    N_2~ dunif(20000,40000)            
+    mu_1 ~ dunif(230,250)     
+    mu_2 ~ dunif(265,280)        
+
+    sigma_1 ~ dunif(2,7)    
+    sigma_2 ~ dunif(2,7)             
+
+    offset ~ dunif(0,5)        
+    slope.alpha ~ dunif(-3.14/2, 0)  
+
+
+}"
+
+peak2.jm <- jags.model(textConnection(exp.background.model.2), 
+    data = list(x = peak1_Co$ADC_channel, y = peak1_Co$Counts), n.chain = 3, quiet = TRUE)
+
+update(peak2.jm , 1000, progress.bar = "none")
+
+peak2.cs <- coda.samples(model = peak2.jm, variable.names = c("N_1", "N_2", "mu_1","mu_2", "sigma_1", "sigma_2", "offset", "slope.alpha"), n.iter = 10000, thin = 15, progress.bar = "none")
+
+summary(peak2.cs)
+
+#plot(peak2.cs)
+
+peak2_mcmc <- as.mcmc(do.call(rbind, peak2.cs))
+
+N_1 <- mean(peak2_mcmc[,1])
+N_2 <-mean(peak2_mcmc[,2])
+sigma_1 <- mean(peak2_mcmc[,6])
+sigma_2 <- mean(peak2_mcmc[,7])
+mu_1 <- mean(peak2_mcmc[,3])
+mu_2 <- mean(peak2_mcmc[,4])
+slope.alpha <- mean(peak2_mcmc[,8])
+offset <- mean(peak2_mcmc[,5])
+x <- peak1_Co$ADC_channel
+y <- N_1/sqrt(2*3.14*sigma_1*sigma_1)*exp((-(x-mu_1)*(x-mu_1))/(2*sigma_1*sigma_1)) +N_2/sqrt(2*3.14*sigma_2*sigma_2)*exp((-(x-mu_2)*(x-mu_2))/(2*sigma_2*sigma_2)) +exp(tan(slope.alpha)*(x-(mu_1+mu_2)/2) + offset)
+
+plot(peak1_Co$ADC_channel,(peak1_Co$Counts), type = 'S', col='navy', main = '60-Co spectra, NaI detector', xlab = 'ADC channel [#]', ylab = "Counts [#]",cex.main = 1.5)
+lines(x,y) 
+
+```
+
+
+### 22-Na En = 511 keV 
+
+For the following peaks we use as generative model the original Signal function and the linear exponential Background.
+
+
+```{r 22 Na peak 1}
+# range of the first peak
+Na_peak1 = Na_dataset[(Na_dataset$ADC_channel>=80) & (Na_dataset$ADC_channel<=130),]
+plot(Na_peak1$ADC_channel,log(Na_peak1$Counts),  col='springgreen 2', main = '22-Na peak 1', xlab = 'ADC channel [#]', ylab = "Log Counts [#]",cex.main = 1.5)
+
+# rjags model as .bugs file
+# peak describe a gaussian
+# with an exponential background exp(m(x - mu) + offset)
+exp.background.model.Na.1 <- "model{
+    #data likelihood of the poisson
+    for (i in 1:length(x)){
+
+         y[i] ~ dpois(points[i])
+         
+        points[i] <- N/sqrt(2*3.14*sigma*sigma)*exp((-(x[i]-mu)*(x[i]-mu))/(2*sigma*sigma)) +exp(tan(slope)*(x[i]-mu) + offset)  
+        
+    }
+
+    # priors for the generative model
+    # amplitude
+    N ~ dunif(10000,90000)          
+    # range of the centroid
+    mu ~ dunif(100,114)     
+    # range of std
+    sigma ~ dunif(0.01,10)             
+    offset ~ dunif(0,500)      
+    # slope will be tan(slope)
+    slope ~ dunif(-3.14/2, 0)  
+
+
+}"
+
+# initialization of the model
+Na_peak1.jm <- jags.model(textConnection(exp.background.model.Na.1), 
+    data = list(x = Na_peak1$ADC_channel, y = Na_peak1$Counts), n.chain = 3, quiet = TRUE)
+
+# burn-in
+update(Na_peak1.jm , 1000, progress.bar = "none")
+
+# creates the coda sample
+Na_peak1.cs <- coda.samples(model = Na_peak1.jm, variable.names = c("N", "mu", "sigma", "offset", "slope"), n.iter = 10000, thin = 15, progress.bar = "none") 
+
+summary(Na_peak1.cs)
+
+#plot(Na_peak1.cs)
+
+# merge the chains on a mcmc objects
+Na_peak1_mcmc <- as.mcmc(do.call(rbind, Na_peak1.cs))
+#head(Na_peak1_mcmc)
+
+# mean values of the parameters form the mcmc object
+Na_peak1_params <- c("N" = mean(Na_peak1_mcmc[,1]),"mu" = mean(Na_peak1_mcmc[,2]), "offset" = mean(Na_peak1_mcmc[,3]), "sigma" = mean(Na_peak1_mcmc[,4]), "alpha" = mean(Na_peak1_mcmc[,5]))
+#Na_peak1_params
+
+
+# fit of the gaussian peaks + the exponential background
+pred_Na_peak1 <-  Na_peak1_params[1] /sqrt(2*3.14*Na_peak1_params[4]*Na_peak1_params[4])*exp((-(Na_peak1$ADC_channel-Na_peak1_params[2])*(Na_peak1$ADC_channel-Na_peak1_params[2]))/(2*Na_peak1_params[4]*Na_peak1_params[4])) +exp(tan(Na_peak1_params[5])*(Na_peak1$ADC_channel - Na_peak1_params[2]) + Na_peak1_params[3]) 
+
+#plot of the data and the fit
+plot(Na_peak1$ADC_channel, Na_peak1$Counts,  col='springgreen 2', main = '22-Na peak 1', xlab = 'ADC channel [#]', ylab = "Counts [#]",cex.main = 1.5)
+lines(Na_peak1$ADC_channel, pred_Na_peak1)
+
+```
+### 22-Na En = 1274.577 keV
+
+```{r 22 Na peak 2}
+# range of the second peak
+Na_peak2 = Na_dataset[(Na_dataset$ADC_channel>=215) & (Na_dataset$ADC_channel<=290),]
+plot(Na_peak2$ADC_channel,log(Na_peak2$Counts),  col='springgreen 2', main = '22-Na peak 2', xlab = 'ADC channel [#]', ylab = "Log Counts [#]",cex.main = 1.5)
+
+# rjags model as .bugs file
+# peak describe a gaussian
+# with an exponential background exp(m(x - mu) + offset)
+exp.background.model.Na.2 <- "model{
+    #data likelihood
+    for (i in 1:length(x)){
+
+         y[i] ~ dpois(points[i])
+         
+        points[i] <- N/sqrt(2*3.14*sigma*sigma)*exp((-(x[i]-mu)*(x[i]-mu))/(2*sigma*sigma)) +exp(tan(slope)*(x[i]-mu) + offset)  # line generative model
+        
+    }
+
+    #priors for the generative model
+    # specific range of the amplitude
+    N ~ dunif(10000,70000)    
+    # specific range of the centroid
+    mu ~ dunif(250,270)        
+    # specific range of the sigma
+    sigma ~ dunif(0.01,10)             
+    offset ~ dunif(0,40)        
+    slope ~ dunif(-3.14/2, 0)  
+
+
+}"
+
+# initialization of the model
+Na_peak2.jm <- jags.model(textConnection(exp.background.model.Na.2), 
+    data = list(x = Na_peak2$ADC_channel, y = Na_peak2$Counts), n.chain = 3, quiet = TRUE)
+
+# burn-in
+update(Na_peak2.jm , 1000, progress.bar="none")
+
+# creates the coda sample
+Na_peak2.cs <- coda.samples(model = Na_peak2.jm, variable.names = c("N", "mu", "sigma", "offset", "slope"), n.iter = 10000, thin = 15, progress.bar="none") 
+
+summary(Na_peak2.cs)
+
+#plot(Na_peak2.cs)
+
+# merge the chains on a mcmc objects
+Na_peak2_mcmc <- as.mcmc(do.call(rbind, Na_peak2.cs))
+#head(Na_peak2_mcmc)
+
+# mean values of the parameters form the mcmc object
+Na_peak2_params <- c("N" = mean(Na_peak2_mcmc[,1]),"mu" = mean(Na_peak2_mcmc[,2]), "offset" = mean(Na_peak2_mcmc[,3]), "sigma" = mean(Na_peak2_mcmc[,4]), "alpha" = mean(Na_peak2_mcmc[,5]))
+#Na_peak2_params
+
+# fit of the gaussian peaks + the exponential background
+pred_Na_peak2 <-  Na_peak2_params[1] /sqrt(2*3.14*Na_peak2_params[4]*Na_peak2_params[4])*exp((-(Na_peak2$ADC_channel-Na_peak2_params[2])*(Na_peak2$ADC_channel-Na_peak2_params[2]))/(2*Na_peak2_params[4]*Na_peak2_params[4])) +exp(tan(Na_peak2_params[5])*(Na_peak2$ADC_channel - Na_peak2_params[2]) + Na_peak2_params[3]) 
+
+#plot of the data and the fit
+plot(Na_peak2$ADC_channel, Na_peak2$Counts,  col='springgreen 2', main = '22-Na peak 2', xlab = 'ADC channel [#]', ylab = "Counts [#]",cex.main = 1.5)
+lines(Na_peak2$ADC_channel, pred_Na_peak2)
+
+```
+
+### 137-Cs En = 661.66 keV
+
+
+```{r 137 Cs peak}
+# range of the Cesium peak
+Cs_peak = Cs_dataset[(Cs_dataset$ADC_channel>=100) & (Cs_dataset$ADC_channel<=150),]
+plot(Cs_peak$ADC_channel, log(Cs_peak$Counts),  col='coral 2', main = '137-Cs peak 2', xlab = 'ADC channel [#]', ylab = "Log Counts [#]",cex.main = 1.5)
+
+# rjags model as .bugs file
+# peak describe a gaussian
+# with an exponential background exp(m(x - mu) + offset)
+exp.background.model.Cs <- "model{
+    #data likelihood
+    for (i in 1:length(x)){
+
+         y[i] ~ dpois(points[i])
+         
+        points[i] <- N/sqrt(2*3.14*sigma*sigma)*exp((-(x[i]-mu)*(x[i]-mu))/(2*sigma*sigma)) +exp(tan(slope)*(x[i]-mu) + offset)  # line generative model
+        
+    }
+
+    #priors for the generative model
+    
+    # specific range of the amplitude
+    N ~ dunif(80000,150000)          
+    # specific range of the centroid
+    mu ~ dunif(130,145)        
+    # specific range of the std
+    sigma ~ dunif(0.01,10)             
+    offset ~ dunif(0,500)        
+    slope ~ dunif(-3.14/2, 0)  
+
+
+}"
+
+# initialization of the model
+Cs_peak.jm <- jags.model(textConnection(exp.background.model.Cs), 
+    data = list(x = Cs_peak$ADC_channel, y = Cs_peak$Counts), n.chain = 3, quiet=TRUE)
+
+# burn-in
+update(Cs_peak.jm , 1000, progress.bar = "none")
+
+# creates the coda sample
+Cs_peak.cs <- coda.samples(model = Cs_peak.jm, variable.names = c("N", "mu", "sigma", "offset", "slope"), n.iter = 10000, thin = 15, progress.bar = "none") 
+
+summary(Cs_peak.cs)
+
+#plot(Cs_peak.cs)
+
+# merge the chains on a mcmc objects
+Cs_peak_mcmc <- as.mcmc(do.call(rbind, Cs_peak.cs))
+#head(Cs_peak_mcmc)
+
+# mean values of the parameters form the mcmc object
+Cs_peak_params <- c("N" = mean(Cs_peak_mcmc[,1]),"mu" = mean(Cs_peak_mcmc[,2]), "offset" = mean(Cs_peak_mcmc[,3]), "sigma" = mean(Cs_peak_mcmc[,4]), "alpha" = mean(Cs_peak_mcmc[,5]))
+#Cs_peak_params
+
+# fit of the gaussian peaks + the exponential background
+pred_Cs_peak <-  Cs_peak_params[1] /sqrt(2*3.14*Cs_peak_params[4]*Cs_peak_params[4])*exp((-(Cs_peak$ADC_channel-Cs_peak_params[2])*(Cs_peak$ADC_channel-Cs_peak_params[2]))/(2*Cs_peak_params[4]*Cs_peak_params[4])) +exp(tan(Cs_peak_params[5])*(Cs_peak$ADC_channel - Cs_peak_params[2]) + Cs_peak_params[3]) 
+
+#plot of the data and the fit
+plot(Cs_peak$ADC_channel, Cs_peak$Counts,  col='coral 2', main = '137-Cs peak', xlab = 'ADC channel [#]', ylab = "Counts [#]",cex.main = 1.5)
+lines(Cs_peak$ADC_channel, pred_Cs_peak)
+
+```
+
+## 2. Linear Calibration
+
+Assuming a linear response of the detector as a function of energy, we perform a calibration of the detector associating the centroid of each peak to the nominal value of the detected γ full energy peak.
+
+To infer the parameters we use again a JAGS model.
+
+Generative model:
+
+$$\ y = a + b \cdot x$$
+
+- $a$ = offset
+
+- $b$ = slope
+
+- $x$ = centroid the peak
+
+Measurement Model:
+
+$$\text{Norm}(\sigma |E, y ) = \frac{1}{\sqrt{2 \pi}\sigma} \exp \left[ -\frac{(E - y(x))^2}{2\sigma^2}\right] $$ 
+
+- $E$: true value of gamma peak, taken from literature
+
+- $y(x)$: values of the peak from the generative model
+
+- $sigma$: standard deviation
+
+In this framework we adopt normal prior distributions.
+
+```{r 2 calibration1}
+
+# linear model as .bug file for calibration
+# the theoretical value, the fit,  and the measurement will have some discrepancy
+# the difference of this two value will follow a normal distribution 
+# we also want to infer the value of sigma
+linear.model <- "model{
+    # Likelihood model for X
+    for (i in 1:N){
+      E[i] ~ dnorm(f[i], tau) # tau is precision (1 / variance)
+		  f[i] <- a + b* x[i]
+    }
+    # Prior model for p
+    b ~ dnorm(0, 0.01)
+    a ~ dnorm(0, 0.01)
+    sigma ~ dnorm(1, 0.1)
+    tau <- 1 / (sigma * sigma)
+
+}"
+
+# Photon energy of the peaks
+E_gamma <- c(511, 1274.577, 661.66 , 1173.24, 1332.51)
+
+# Channel energy of the peaks
+E_ch <- c(1.066526e+02, 2.602560e+02, 1.371767e+02, 2.398e+02, 2.721e+02)
+
+# initialization of the model
+calibration.jags <- jags.model(textConnection(linear.model), 
+    data = list(x = E_ch, E = E_gamma, N = length(E_gamma)), n.chain = 3, quiet = TRUE)
+
+#burn-in
+update(calibration.jags , 1000, progress.bar = "none")
+
+# creation of the coda sample
+linear.pred <- coda.samples(model = calibration.jags, variable.names = c("a", "b", "sigma"), n.iter = 10000, thin = 15, progress.bar = "none") 
+
+# summary of the coda samples
+summary(linear.pred)
+```
+
+```{r, fig.width=8, fig.height=12}
+# plot of the coda samples
+plot(linear.pred)
+```
+
+```{r 2 calibration 4}
+
+# store the chains as a mcmc object 
+calibration_mcmc <- as.mcmc(do.call(rbind, linear.pred))
+
+#head(calibration_mcmc)
+
+# calculate the ACF CORRELATIONS between the params
+calibration.acf <- acf(calibration_mcmc, plot = FALSE) #plot = F will not show the plot of the ACF.
+
+cal_names <- c("b", "a", expression(sigma))
+
+```
+
+```{r, fig.width=8, fig.height=6}
+# Your code to generate the plots
+
+# plot the ACF CORRELATIONS
+plot(calibration.acf, type = "s", xlab = "Lag", ylab = NULL,
+     ylim = NULL, main = NULL, col = "red", lwd = 2)
+```
+
+```{r 2 calibration 3}
+
+#CORRELATION BETWEEN PARAMS
+# Set the figure size
+par(mfrow = c(1,3))
+for(i in 1:2){
+  for(j in (i+1):3){
+    points.i <- as.numeric(calibration_mcmc[,i])
+points.j <- as.numeric(calibration_mcmc[,j])
+plot(points.i, points.j,  col="coral", pch = 1, xlab=cal_names[i], ylab=cal_names[j], cex.lab=1.3, cex.axis=1.3, cex.main=1.3, cex.sub=1.3)
+  }
+}
+
+dev.off()
+
+# mean value of the parameters from the mcmc samples
+cal_params <- c(mean(calibration_mcmc[,1]), mean(calibration_mcmc[,2]), mean(calibration_mcmc[,3]))
+
+# vector of values of the channel energy
+E_ch_new <- 0:500
+
+#length of the channel energy vector
+n <- length(E_ch_new)
+
+# expected value of the linear calibration
+fit.pred <- cal_params[1] + E_ch_new * cal_params[2]
+
+
+
+#plot the expectation value of the linear fit of the calibration
+plot(E_ch_new, fit.pred, main = "Calibration of the NaI detector", type = 'l', xlab = "Channel [ch]", ylab = expression("E"* gamma ~ "[keV]"),lwd = 2, col = "dark red")
+# measurements
+points(E_ch, E_gamma, pch = 2, col = "gold", cex = 1, lwd = 2)
+# Add legend with formulas
+legend_text <- bquote("E"* gamma == .(round(mean(calibration_mcmc[,1]), 2)) + .(round(mean(calibration_mcmc[,2]), 2)) * "* Ch")
+sigma_text <- bquote(sigma == .(round(mean(calibration_mcmc[,3]), 2)))
+legend("topleft", legend = c(legend_text, sigma_text), bty = "n", cex = 1.2)
+
+#plot after calibration
+Na_dataset$Energy <- Na_dataset$ADC_channel * cal_params[2] + cal_params[1]
+Cs_dataset$Energy <- Cs_dataset$ADC_channel * cal_params[2] + cal_params[1]
+Co_dataset$Energy <- Co_dataset$ADC_channel * cal_params[2] + cal_params[1]
+
+
+#plot calibration of Na
+plot(Na_dataset$Energy,log(Na_dataset$Counts), type = 's', col='deepskyblue', main = 'Calibrated Na spectra, NaI detector', xlab = expression("E"* gamma ~ "[keV]"), ylab = "Log Counts [#]",cex.main = 1.5)
+
+# plot calibration of Cs
+plot(Cs_dataset$Energy,log(Cs_dataset$Counts), type = 's', col='deepskyblue', main = 'Calibrated Cs spectra, NaI detector', xlab = expression("E"* gamma ~ "[keV]"), ylab = "Log Counts [#]",cex.main = 1.5)
+
+# plot calibration of Cs
+plot(Co_dataset$Energy,log(Co_dataset$Counts), type = 's', col='deepskyblue', main = 'Calibrated Co spectra, NaI detector', xlab = expression("E"* gamma ~ "[keV]"), ylab = "Log Counts [#]",cex.main = 1.5)
+
+
+```
+
+## 3. Energy resolution behavior
+
+Using a MCMC method (with either JAGS or stan), study the behaviour of the energy resolution as a function of the photon energy and infer the parameters of eq.1 and 2.
+
+We make an inference using a JAGS model. 
+
+Generative model:
+
+$$FWHM = \sqrt{8 ln(2)FwEγ + w_e^2}$$
+
+note that the Fano factor $F=\dfrac{ \sigma_{sper}^2}{ \sigma_{pois}^2}$. This factor must be introduced since the process giving rise to each individual charge carrier is not independent as the number of ways an atom may be ionized is limited by the discrete electron shells.
+
+Measurement Model:
+
+$$\text{Norm}(\sigma |E, y ) = \frac{1}{\sqrt{2 \pi}\sigma} \exp \left[ -\frac{(E - y(x))^2}{2\sigma^2}\right] $$ 
+
+- $E$: true value of gamma peak, taken from literature
+
+- $y(x)$: values of the peak from the generative model
+
+- $sigma$: standard deviation
+
+```{r}
+
+#model as .bug file
+en.resolution.model <- "model{
+    # Likelihood model 
+    for (i in 1:N){
+      FWHM[i] ~ dnorm(y[i], tau) # tau is precision (1 / variance)
+		  y[i] <- sqrt(8*log(2)*Fw*E[i] + w_e2) 
+    }
+    # Prior model for F,w,w_e
+    Fw ~ dunif(0, 1) 
+    #w ~ dunif(0, 0.5)
+    w_e2 ~ dunif(0, 10)
+
+    sigma ~ dunif(0, 1)
+    tau <- 1 / (sigma * sigma)
+
+}"
+
+#x <- c(1173.24, 1332.51, 511, 1274.577,661.66) true values of energies
+# this is the order of the following vector
+# energies of the peak calibrated in keV
+x <- c(2.398e+02,  2.721e+02, 1.066526e+02, 2.602560e+02, 1.371767e+02)*cal_params[2] + cal_params[1]
+#y <- beta_list
+#x
+# FWHM in channel
+y_ch <- c(4.665*2.35,5.111*2.35,3.144968*2.35,5.115358*2.35, 3.686440*2.35)
+
+# FWHM in energy
+# since it is a range of energies the offset is elided 
+y <- y_ch*cal_params[2]
+
+jm <- jags.model(textConnection(en.resolution.model), 
+    data = list(E = x, FWHM = y, N = length(y)), n.chain = 3, quiet = TRUE)
+
+#burn-in
+update(jm , 1000, progress.bar = "none")
+
+en.resolution <- coda.samples(model = jm, variable.names = c("Fw", "w_e2", "sigma"), n.iter = 10000, thin = 15, progress.bar ="none") 
+
+summary(en.resolution)
+#pdf("plot_output.pdf")  # Specify the output PDF file name
+```
+
+```{r, fig.width=8, fig.height=12}
+# plot of the coda samples
+plot(en.resolution)
+```
+
+```{r 2 calibration 2}
+#dev.off()  # Close the PDF device and save the file
+
+
+en.resol_mcmc <- as.mcmc(do.call(rbind, en.resolution))
+#en.resol_mcmc
+
+
+#en.resol.acf <- acf(en.resol_mcmc, plot = F) #plot = F will not show the plot of the ACF.
+
+en.resol_names <- c("Fw", expression(sigma), "w_e2")
+
+en.resol_mcmc[,"w_e2"] <- sqrt(en.resol_mcmc[,"w_e2"])
+
+#ACF CORRELATION
+
+#plot(en.resol.acf, type = "s", xlab = "Lag", ylab = NULL,
+  #   ylim = NULL, main = NULL, col = "red", lwd = 2)
+
+#CORRELATION BETWEEN PARAMS
+
+
+par(mfrow = c(1,3))
+for(i in 1:2){
+  for(j in (i+1):3){
+    points.i <- as.numeric(en.resol_mcmc[,i])
+points.j <- as.numeric(en.resol_mcmc[,j])
+plot(points.i, points.j,  col="coral", pch = 1, xlab=en.resol_names[i], ylab=en.resol_names[j], cex.lab=1.3, cex.axis=1.3, cex.main=1.3, cex.sub=1.3)
+  }
+}
+
+dev.off()
+
+en.res.params <- c(mean(en.resol_mcmc[,1]), mean(en.resol_mcmc[,2]), mean(en.resol_mcmc[,3]))
+
+
+E <- seq(from = 0, to = 5000, length.out = 10000)
+n <- length(E)
+
+en.resol.fit <- sqrt(8*log(2)*en.res.params[1]*E + en.res.params[3]*en.res.params[3])
+#plo the data
+plot(E, en.resol.fit, main = "NaI detector FWHM vs Energy fit", type = 'l', xlab = expression("E"* gamma ~ "[keV]"), ylab ="FWHM [keV]",lwd = 2, col = "dark red", xlim=c(0,2000))
+points(x, y, pch = 1, col = "gold", cex = 2, lwd = 2)
+# Add legend with formulas
+legend("topleft", legend = c(expression(FWHM == sqrt(8*ln(2)*F*w*E[gamma] + w[e]^2)), bquote(sigma == .(round(mean(en.resol_mcmc[,"sigma"]), 2)))), bty = "n", cex = 1.2)
+
+summary_fit <- data.frame("F" = mean(en.resol_mcmc[,"Fw"])/0.5, "w[keV]" = 0.5, "w_e[keV]" = mean(en.resol_mcmc[,"w_e2"]))
+names(summary_fit) = c("F", "w[keV]", "w_e[keV]")
+summary_fit
+
+```
+We stress that $w$ is not anymore the electron-hole production energy threshold, since in scintillator detector we have also uncertainty due to PMT. To retrieve the Fano factor $F$ we can just divide $Fw$ by $w$, that now is equal to $w = 0.5 keV$, and is token from: Nilgün Demir, Zehra Nur Kuluöztürk, Determination of energy resolution for a NaI(Tl) detector modeled with FLUKA code, Nuclear Engineering and Technology, https://doi.org/10.1016/j.net.2021.05.017.
+
+Also here we found a Fano Factor smaller than 1.
+
+
+## 4. FWHM comparison between Ge and NaI detectors
+
+Finally, compare the performances of the two detectors.
+We collect the results obtained in the data analysis and show the resolution efficiency of the two detectors for the common gamma source 137-Cs and 60-Co.
+
+```{r Comparison Ge NaI 1}
+# FWHM of Ge detector
+E_FWHM_Ge <- c(0.8876703, 1.6244367, 2.2690219, 2.4882082)
+names(E_FWHM_Ge) <- c("241-Am", "137-Cs", "60-Co 1", "60-Co 2")
+
+# FWHM of NaI detector 
+E_FWHM_NaI <- c(54.46429, 59.67138, 36.71778, 59.72226, 43.03952)
+names(E_FWHM_NaI) <- c("60-Co 1", "60-Co 2", "22-Na 1", "22-Na 2", "137-Cs")
+
+# peaks in common for the Ge and NaI detector
+combined_data_det <- data.frame(
+  E_FWHM_Ge = E_FWHM_Ge[c( "137-Cs", "60-Co 1", "60-Co 2")],
+  E_FWHM_NaI = E_FWHM_NaI[c( "137-Cs", "60-Co 1", "60-Co 2")]
+)
+```
+
+```{r, fig.width=8, fig.height=6}
+
+# plot the FWHM for the peaks in common
+barplot(t(combined_data_det), beside = TRUE, col = c("dark red", "springgreen 3"), main = "Comparison of FWHM for Ge and NaI detector", xlab = "Element", ylab = "FWHM [keV]" )
+legend("topleft", legend = c("FWHM Ge", "FWHM NaI"), fill = c("dark red", "springgreen 3"))
+text(x = 1.5, y = 5, labels = "1.62", cex = 1.2)
+text(x = 2.5, y = 38, labels = "43.04", cex = 1.2)
+text(x = 4.5, y = 5, labels = "2.27", cex = 1.2)
+text(x = 5.5, y = 49, labels = "54.46", cex = 1.2)
+text(x = 7.5, y = 5, labels = "2.49", cex = 1.2)
+text(x = 8.5, y = 55, labels = "59.67", cex = 1.2)
+```
+
+```{r Comparison Ge NaI 2}
+
+# summary table of inferred results
+Peak <- c("22-Na 1", "22-Na 2", "137-Cs","60-Co 1", "60-Co 2", "241-Am")
+Photon_Energy <- c(511, 1274.577, 661.66, 1173.24, 1332.51, 59.54)
+Ge_Photon_Energy <- c(NA, NA, 661.75156, 1173.43320, 1332.37122, 59.47234)
+NaI_Photon_Detector <- c(511.0411, 1274.1428,  662.6848, 1172.5174, 1332.9838, NA)
+Ge_FWHM <- c(NA, NA,1.6244367, 2.2690219, 2.4882082,  0.8876703)
+NaI_FWHM <- c(36.71778, 59.72226, 43.03952, 54.46429, 59.67138, NA)
+
+results <- data.frame(list(Peak, Photon_Energy, Ge_Photon_Energy, NaI_Photon_Detector, Ge_FWHM, NaI_FWHM))
+colnames(results) <- c("Elements", "Photon Energy [keV]", "Ge Peak [keV]", "NaI Peak [keV]", "Ge FWHM [keV]", "NaI FWHM [keV]")
+
+# ratio between the FWHM of Ge and FWHM of NaI
+results$Ratio <-  results$`NaI FWHM [keV]` / results$`Ge FWHM [keV]`
+colnames(results) <- c("Elements", "Photon Energy [keV]", "Ge Peak [keV]", "NaI Peak [keV]", "Ge FWHM [keV]", "NaI FWHM [keV]", "Ratio FWHM NaI/Ge")
+
+
+print(results)
+```
+
+As we can observe from the table, the energy resolution of the Ge detector is approximately 25 times better than the NaI one.
